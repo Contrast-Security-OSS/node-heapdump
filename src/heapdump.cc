@@ -22,8 +22,6 @@
 #include <nan.h>
 #include <node_api.h>
 
-inline bool WriteSnapshot(v8::Isolate* isolate, const char* filename);
-
 #ifdef _WIN32
 #include "heapdump-win32.h"
 #endif
@@ -61,8 +59,22 @@ const v8::HeapSnapshot* TakeHeapSnapshot(v8::Isolate* isolate) {
     return isolate->GetHeapProfiler()->TakeHeapSnapshot();
 }
 
+static bool writeSnapshotToDisk(v8::Isolate* isolate, const char* filename) {
+    FILE* fp = fopen(filename, "w");
+    if (fp == NULL) return false;
+    const v8::HeapSnapshot* const snap = TakeHeapSnapshot(isolate);
+    FileOutputStream stream(fp);
+    snap->Serialize(&stream, v8::HeapSnapshot::kJSON);
+    fclose(fp);
+    // Work around a deficiency in the API.  The HeapSnapshot object is const
+    // but we cannot call HeapProfiler::DeleteAllHeapSnapshots() because that
+    // invalidates _all_ snapshots, including those created by other tools.
+    const_cast<v8::HeapSnapshot*>(snap)->Delete();
+    return true;
+}
+
 /* param: filename (string: utf8) */
-napi_value _WriteSnapshot(napi_env env, napi_callback_info args) {
+napi_value WriteSnapshot(napi_env env, napi_callback_info args) {
     napi_status status;
     char *buf = nullptr;
     size_t bufLength = 0;
@@ -89,33 +101,18 @@ napi_value _WriteSnapshot(napi_env env, napi_callback_info args) {
     status = napi_get_value_string_utf8(env, argv[0], buf, bufLength, &bytesCopied);
     CHECK_ERROR(env, status, "Unable to convert cstring back to napi.");
 
-    WriteSnapshot(v8::Isolate::GetCurrent(), buf);
+    writeSnapshotToDisk(v8::Isolate::GetCurrent(), buf);
 
     free(buf);
     
     return null;
 }
 
-// REWRITE
-inline bool WriteSnapshot(v8::Isolate* isolate, const char* filename) {
-    FILE* fp = fopen(filename, "w");
-    if (fp == NULL) return false;
-    const v8::HeapSnapshot* const snap = TakeHeapSnapshot(isolate);
-    FileOutputStream stream(fp);
-    snap->Serialize(&stream, v8::HeapSnapshot::kJSON);
-    fclose(fp);
-    // Work around a deficiency in the API.  The HeapSnapshot object is const
-    // but we cannot call HeapProfiler::DeleteAllHeapSnapshots() because that
-    // invalidates _all_ snapshots, including those created by other tools.
-    const_cast<v8::HeapSnapshot*>(snap)->Delete();
-    return true;
-}
-
 napi_value Init(napi_env env, napi_value exports) {
     napi_status status;
     napi_value writeSnapshotCallback;
 
-    status = napi_create_function(env, nullptr, 0, _WriteSnapshot, nullptr, &writeSnapshotCallback);
+    status = napi_create_function(env, nullptr, 0, WriteSnapshot, nullptr, &writeSnapshotCallback);
     CHECK_ERROR(env, status, "Unable to wrap native writeSnapshot");
 
     status = napi_set_named_property(env, exports, "writeSnapshot", writeSnapshotCallback);

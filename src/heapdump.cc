@@ -1,4 +1,5 @@
 // Copyright (c) 2012, Ben Noordhuis <info@bnoordhuis.nl>
+// Ported to N-API by Contrast Security
 //
 // Permission to use, copy, modify, and/or distribute this software for any
 // purpose with or without fee is hereby granted, provided that the above
@@ -12,36 +13,25 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-#include "node.h"  // Picks up BUILDING_NODE_EXTENSION on Windows, see #30.
-
-#include "nan.h"
-#include "uv.h"
-#include "v8-profiler.h"
-#include "v8.h"
-
-#include <errno.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <v8.h>
+#include <v8-profiler.h>
+#include <nan.h>
+#include <node_api.h>
 
-namespace {
-
-static const int kMaxPath = 4096;
-static const int kSignalFlag = 2;
-inline int WriteSnapshot(v8::Isolate* isolate, const char* filename);
-inline void PlatformInit(v8::Isolate* isolate, int flags);
-inline void RandomSnapshotFilename(char* buffer, size_t size);
-
-}  // namespace anonymous
+inline bool WriteSnapshot(v8::Isolate* isolate, const char* filename);
 
 #ifdef _WIN32
 #include "heapdump-win32.h"
-#else
-#include "heapdump-posix.h"
 #endif
 
-namespace {
+// status checks for error are super common and repetetive.
+#define CHECK_ERROR(_environment, _status, _error_str)                  \
+    if ((_status) != napi_ok)                                           \
+        napi_throw_error(_environment, nullptr, (_error_str));
 
 class FileOutputStream : public v8::OutputStream {
  public:
@@ -68,71 +58,70 @@ class FileOutputStream : public v8::OutputStream {
 };
 
 const v8::HeapSnapshot* TakeHeapSnapshot(v8::Isolate* isolate) {
-  (void) &isolate;
-#if NODE_VERSION_AT_LEAST(3, 0, 0)
-  return isolate->GetHeapProfiler()->TakeHeapSnapshot();
-#elif NODE_VERSION_AT_LEAST(0, 11, 0)
-  return isolate->GetHeapProfiler()->TakeHeapSnapshot(Nan::EmptyString());
-#else
-  return v8::HeapProfiler::TakeSnapshot(Nan::EmptyString());
-#endif
+    return isolate->GetHeapProfiler()->TakeHeapSnapshot();
 }
 
-NAN_METHOD(WriteSnapshot) {
-  v8::Isolate* const isolate = info.GetIsolate();
+/* param: filename (string: utf8) */
+napi_value _WriteSnapshot(napi_env env, napi_callback_info args) {
+    napi_status status;
+    char *buf = nullptr;
+    size_t bufLength = 0;
+    size_t bytesCopied = 0;
+    napi_value null;
 
-  char filename[kMaxPath];
-  v8::Local<v8::Value> filename_v = info[0];
-  if (filename_v->IsString()) {
-    Nan::Utf8String filename_string(filename_v);
-    snprintf(filename, sizeof(filename), "%s", *filename_string);
-  } else {
-    RandomSnapshotFilename(filename, sizeof(filename));
-  }
+    napi_get_null(env, &null);
 
-  if (const int err = WriteSnapshot(isolate, filename)) {
-    info.GetReturnValue().Set(err);
-    return;  // Write error.
-  }
+    size_t argc = 1;
+    napi_value argv[1];
 
-  if (!filename_v->IsString()) filename_v = Nan::New(filename).ToLocalChecked();
-  info.GetReturnValue().Set(filename_v);
+    status = napi_get_cb_info(env, args, &argc, argv, nullptr, nullptr);
+    CHECK_ERROR(env, status, "Could not parse arguments to writeSnapshot");
+
+    status = napi_get_value_string_utf8(env, argv[0], buf, bufLength, &bytesCopied);
+    CHECK_ERROR(env, status, "Could not allocate memory for buffer.");
+
+    bufLength = bytesCopied + 1;
+
+    buf = static_cast<char *>(malloc(sizeof(char) * bufLength));
+    if (buf == nullptr) {
+        napi_throw_error(env,  nullptr, "Could not allocate memory");
+    }
+    status = napi_get_value_string_utf8(env, argv[0], buf, bufLength, &bytesCopied);
+    CHECK_ERROR(env, status, "Unable to convert cstring back to napi.");
+
+    WriteSnapshot(v8::Isolate::GetCurrent(), buf);
+
+    free(buf);
+    
+    return null;
 }
 
-inline int WriteSnapshot(v8::Isolate* isolate, const char* filename) {
-  FILE* fp = fopen(filename, "w");
-  if (fp == NULL) return errno;
-  const v8::HeapSnapshot* const snap = TakeHeapSnapshot(isolate);
-  FileOutputStream stream(fp);
-  snap->Serialize(&stream, v8::HeapSnapshot::kJSON);
-  int err = 0;
-  if (fclose(fp)) err = errno;
-  // Work around a deficiency in the API.  The HeapSnapshot object is const
-  // but we cannot call HeapProfiler::DeleteAllHeapSnapshots() because that
-  // invalidates _all_ snapshots, including those created by other tools.
-  const_cast<v8::HeapSnapshot*>(snap)->Delete();
-  return err;
+// REWRITE
+inline bool WriteSnapshot(v8::Isolate* isolate, const char* filename) {
+    FILE* fp = fopen(filename, "w");
+    if (fp == NULL) return false;
+    const v8::HeapSnapshot* const snap = TakeHeapSnapshot(isolate);
+    FileOutputStream stream(fp);
+    snap->Serialize(&stream, v8::HeapSnapshot::kJSON);
+    fclose(fp);
+    // Work around a deficiency in the API.  The HeapSnapshot object is const
+    // but we cannot call HeapProfiler::DeleteAllHeapSnapshots() because that
+    // invalidates _all_ snapshots, including those created by other tools.
+    const_cast<v8::HeapSnapshot*>(snap)->Delete();
+    return true;
 }
 
-inline void RandomSnapshotFilename(char* buffer, size_t size) {
-  const uint64_t now = uv_hrtime();
-  const unsigned long sec = static_cast<unsigned long>(now / 1000000);
-  const unsigned long usec = static_cast<unsigned long>(now % 1000000);
-  snprintf(buffer, size, "heapdump-%lu.%lu.heapsnapshot", sec, usec);
+napi_value Init(napi_env env, napi_value exports) {
+    napi_status status;
+    napi_value writeSnapshotCallback;
+
+    status = napi_create_function(env, nullptr, 0, _WriteSnapshot, nullptr, &writeSnapshotCallback);
+    CHECK_ERROR(env, status, "Unable to wrap native writeSnapshot");
+
+    status = napi_set_named_property(env, exports, "writeSnapshot", writeSnapshotCallback);
+    CHECK_ERROR(env, status, "Cannot set property on exports");
+
+    return exports;
 }
 
-NAN_METHOD(Configure) {
-  PlatformInit(info.GetIsolate(), Nan::To<int32_t>(info[0]).FromJust());
-}
-
-NAN_MODULE_INIT(Initialize) {
-  Nan::Set(target,
-           Nan::New("kSignalFlag").ToLocalChecked(),
-           Nan::New(kSignalFlag));
-  Nan::SetMethod(target, "configure", Configure);
-  Nan::SetMethod(target, "writeSnapshot", WriteSnapshot);
-}
-
-NODE_MODULE(addon, Initialize)
-
-}  // namespace anonymous
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)

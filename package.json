@@ -17,6 +17,7 @@
   },
   "license": "ISC",
   "scripts": {
+    "release": "node scripts/make-release.js",
     "test": "tap test/test-*"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "shelljs": "~0.3.0",
-    "tap": "~0.4.12"
+    "tap": "~0.4.12",
+    "yargs-interactive": "^3.0.0"
   }
 }

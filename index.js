@@ -13,9 +13,10 @@
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 // when distributed, the root directory will include all of the built modules.
-// ie darwin.node, win32.node, linux.node.
+// ie darwin-12.node, win32-12.node, linux-14.node.
+const version = process.version.split('.')[0].substring(1);
 try {
-  module.exports = require(`${__dirname}/${process.platform}.node`);
+  module.exports = require(`${__dirname}/${process.platform}-${version}/addon.node`);
 } catch(e) {
   if (e.code !== 'MODULE_NOT_FOUND') throw e;
   module.exports = require('./build/Release/addon.node');

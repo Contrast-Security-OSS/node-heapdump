@@ -47,3 +47,8 @@ If you end up with empty or truncated snapshot files, check the output of
 `dmesg`; you may have had a run-in with the system's OOM killer or a resource
 limit enforcing policy, like `ulimit -u` (max user processes) or `ulimit -v`
 (max virtual memory size).
+
+## Publishing New Versions to @contrast/heapdump
+1. Trigger a Build Artifact workflow by merging or pushing to master.
+2. Download and save the heapdump.tgz.zip artifact produced during the run
+3. Run `npm run release`

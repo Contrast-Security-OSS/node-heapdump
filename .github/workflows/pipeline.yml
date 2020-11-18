@@ -1,0 +1,111 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - '*'
+jobs:
+  build:
+    strategy:
+      matrix:
+        node: [ 14, 12, 10 ]
+        platform: [ macos-latest, windows-latest ]
+    runs-on: ${{ matrix.platform }}
+    name: build-${{ matrix.platform }} (${{ matrix.node }})
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup node
+        uses: actions/setup-node@v1
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Build
+        run: |
+          npm install
+      - uses: actions/upload-artifact@v1
+        with:
+          name: ${{ matrix.platform }}-${{ matrix.node }}
+          path: build/Release/addon.node
+        if: github.ref == 'refs/heads/master'
+
+  build-linux:
+    strategy:
+      matrix:
+        node: [ 14, 12, 10 ]
+    steps:
+      - uses: actions/checkout@v2
+      - uses: ./.github/actions/centos7-test
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/upload-artifact@v1
+        with:
+          name: linux-${{ matrix.node }}
+          path: build/Release/addon.node
+        if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-16.04
+
+  artifact:
+    if: github.ref == 'refs/heads/master'
+    needs: [ build, build-linux ]
+    runs-on: ubuntu-latest
+    name: Building artifact
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions/setup-node@v1
+        with:
+          node-version: 14
+          registry-url: https://registry.npmjs.org/
+      # download all of the built artifacts.
+      - run: mkdir artifact
+      - uses: actions/download-artifact@v1
+        with:
+          name: linux-14
+          path: artifact/linux-14
+      - uses: actions/download-artifact@v1
+        with:
+          name: linux-12
+          path: artifact/linux-12
+      - uses: actions/download-artifact@v1
+        with:
+          name: linux-10
+          path: artifact/linux-10
+      - uses: actions/download-artifact@v1
+        with:
+          name: macos-latest-14
+          path: artifact/darwin-14
+      - uses: actions/download-artifact@v1
+        with:
+          name: macos-latest-12
+          path: artifact/darwin-12
+      - uses: actions/download-artifact@v1
+        with:
+          name: macos-latest-10
+          path: artifact/darwin-10
+      - uses: actions/download-artifact@v1
+        with:
+          name: windows-latest-14
+          path: artifact/win32-14
+      - uses: actions/download-artifact@v1
+        with:
+          name: windows-latest-12
+          path: artifact/win32-12
+      - uses: actions/download-artifact@v1
+        with:
+          name: windows-latest-10
+          path: artifact/win32-10
+      - name: pack artifact
+        run: |
+          echo "artifacts" && ls artifact
+          mv *.js package.json artifact/
+          cd artifact && npm pack | xargs -I '{}' mv {} ./heapdump.tgz
+      - uses: actions/upload-artifact@v1
+        with:
+          name: heapdump.tgz
+          path: artifact/heapdump.tgz
+        # upload the un-tar'd version
+      - uses: actions/upload-artifact@v1
+        with:
+          name: heapdump
+          path: artifact
